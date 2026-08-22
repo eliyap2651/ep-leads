@@ -1,0 +1,205 @@
+\
+# ============================================================
+# EP LEADS - Render Blueprint
+# https://render.com/docs/blueprint-spec
+#
+# This single file provisions the ENTIRE stack in one click:
+# Postgres, Redis, the API backend, the Celery worker, the Celery
+# beat scheduler, and the frontend - all wired together with the
+# right environment variables automatically.
+#
+# How to use: on render.com, click "New +" -> "Blueprint", connect
+# this GitHub repo, and Render reads this file automatically.
+# ============================================================
+
+databases:
+  - name: ep-leads-db
+    plan: free
+    databaseName: ep_leads
+    user: ep_leads
+
+services:
+  # --- Redis (used as Celery broker + result backend + app cache) ---
+  - type: redis
+    name: ep-leads-redis
+    plan: free
+    ipAllowList: []
+
+  # --- Backend API ---
+  - type: web
+    name: ep-leads-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    dockerCommand: >
+      sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    envVars:
+      - key: ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ep-leads-db
+          property: connectionString
+      - key: DATABASE_URL_SYNC
+        fromDatabase:
+          name: ep-leads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "14"
+      # --- Fill these in yourself in the Render dashboard after first deploy ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-5
+      - key: SEARCH_PROVIDER
+        value: serper
+      - key: SERPER_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: מנהל מערכת
+      - key: LEAD_SCORE_THRESHOLD_HOT
+        value: "90"
+      - key: LEAD_SCORE_THRESHOLD_HIGH
+        value: "75"
+      - key: LEAD_SCORE_THRESHOLD_MEDIUM
+        value: "55"
+      - key: FRONTEND_ORIGIN
+        fromService:
+          type: web
+          name: ep-leads-frontend
+          property: host
+
+  # --- Celery worker (background scanning/scoring/ingestion tasks) ---
+  - type: worker
+    name: ep-leads-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    dockerCommand: celery -A app.workers.celery_app worker --loglevel=info --pool=threads --concurrency=4
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ep-leads-db
+          property: connectionString
+      - key: DATABASE_URL_SYNC
+        fromDatabase:
+          name: ep-leads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-5
+      - key: SEARCH_PROVIDER
+        value: serper
+      - key: SERPER_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+  # --- Celery beat (scheduler that triggers periodic scans) ---
+  - type: worker
+    name: ep-leads-beat
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    dockerCommand: celery -A app.workers.celery_app beat --loglevel=info
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ep-leads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: ep-leads-redis
+          property: connectionString
+
+  # --- Frontend (React SPA served via nginx) ---
+  - type: web
+    name: ep-leads-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: ep-leads-backend
+          property: host
